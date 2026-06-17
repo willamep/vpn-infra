@@ -5,4 +5,4 @@ udp2raw_password: "{{ vault_udp2raw_password }}"
 wireguard_port: 54321
 # Lowered because of double encapsulation: WireGuard over udp2raw (faketcp).
 # 1280 is a safe starting point; can be raised up to ~1360 as long as large packets pass.
-wireguard_mtu: 1330
+wireguard_mtu: 1310

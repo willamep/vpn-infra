@@ -1,0 +1,43 @@
+- name: Install nftables
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    update_cache: yes
+
+# We ship our own loader unit instead of using the distro nftables.service,
+# whose default /etc/nftables.conf does "flush ruleset" and would wipe
+# Docker's tables.
+- name: Disable distro nftables.service (avoid flush ruleset wiping Docker)
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: no
+    state: stopped
+  failed_when: false
+
+- name: Create nftables drop-in directory
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    mode: '0755'
+
+- name: Deploy firewall ruleset
+  ansible.builtin.template:
+    src: vpn-firewall.nft.j2
+    dest: /etc/nftables.d/vpn-firewall.nft
+    mode: '0644'
+    validate: '/usr/sbin/nft -c -f %s'
+  notify: reload firewall
+
+- name: Install firewall systemd unit
+  ansible.builtin.copy:
+    src: vpn-firewall.service
+    dest: /etc/systemd/system/vpn-firewall.service
+    mode: '0644'
+  notify: reload firewall
+
+- name: Enable and start firewall
+  ansible.builtin.systemd:
+    name: vpn-firewall
+    enabled: yes
+    state: started
+    daemon_reload: yes

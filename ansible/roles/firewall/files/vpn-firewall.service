@@ -1,0 +1,17 @@
+[Unit]
+Description=VPN host firewall (nftables, inet vpn_firewall table)
+# Load after Docker so its tables already exist; our table is independent
+# either way, but this keeps boot ordering clean.
+After=network-pre.target docker.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/vpn-firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables.d/vpn-firewall.nft
+# Only ever remove our own table; never touch Docker's.
+ExecStop=/usr/sbin/nft delete table inet vpn_firewall
+
+[Install]
+WantedBy=multi-user.target

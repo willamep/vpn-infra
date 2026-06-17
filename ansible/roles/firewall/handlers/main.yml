@@ -1,0 +1,6 @@
+- name: Reload firewall
+  listen: reload firewall
+  ansible.builtin.systemd:
+    name: vpn-firewall
+    state: reloaded
+    daemon_reload: yes

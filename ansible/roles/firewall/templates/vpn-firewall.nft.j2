@@ -1,0 +1,56 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible (roles/firewall). Do not edit by hand.
+#
+# We use our OWN table (inet vpn_firewall) and never "flush ruleset",
+# so Docker's nat/filter tables (wg-easy publishing, FORWARD, DOCKER-USER)
+# are left completely untouched. Multiple base chains can hook "input";
+# a packet is dropped if ANY of them drops it, so this table enforces a
+# whitelist on host-bound traffic regardless of Docker's ACCEPT policy.
+
+# Idempotent (re)create: ensure the table exists, delete it, then redefine.
+table inet vpn_firewall {}
+delete table inet vpn_firewall
+
+table inet vpn_firewall {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        # Return traffic for connections we initiated.
+        ct state established,related accept
+
+        # Drop conntrack-INVALID at the kernel level. This also covers the
+        # faketcp packets the kernel can't make sense of, so it won't emit
+        # RST for them (this replaces udp2raw's own "-a" iptables rule).
+        # udp2raw still receives those packets via its raw (AF_PACKET) socket.
+        ct state invalid drop
+
+        # Loopback (udp2raw <-> wg-easy talk over 127.0.0.1).
+        iif "lo" accept
+
+        # ICMP / ICMPv6: kept open for Path MTU Discovery, which matters
+        # because of the tuned WireGuard-over-faketcp MTU. ICMPv6 is also
+        # required for IPv6 NDP. Remove echo-request below if you want the
+        # host to be unpingable.
+        ip protocol icmp icmp type { echo-request, echo-reply, destination-unreachable, time-exceeded, parameter-problem } accept
+        ip6 nexthdr ipv6-icmp accept
+
+        # SSH from anywhere (the only service scanners should ever see).
+        tcp dport 22 accept
+
+{% if udp2raw_mode == 'client' %}
+        # vpn-entry (udp2raw client): the WireGuard endpoint that end-user
+        # clients connect to is open to everyone.
+        udp dport {{ wireguard_port }} accept
+
+        # Everything else is allowed only from the peer node (vpn-exit).
+        ip saddr {{ vpn_exit_ip }} accept
+{% else %}
+        # vpn-exit (udp2raw server): beyond SSH, everything is allowed only
+        # from the peer node (vpn-entry). The faketcp tunnel rides on this.
+        ip saddr {{ vpn_entry_ip }} accept
+{% endif %}
+    }
+
+    # NOTE: intentionally no "forward" or "output" hook here.
+    # FORWARD is owned by Docker (wg-easy routing); OUTPUT stays open.
+}
