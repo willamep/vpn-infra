@@ -1,10 +1,13 @@
 - hosts: vpn-exit
   become: true
   roles:
-    - docker
+    - role: docker
+      tags: ['docker']
 
 - hosts: vpn_nodes
   become: true
   roles:
-    - udp2raw
-    - firewall
+    - role: udp2raw
+      tags: ['udp2raw']
+    - role: firewall
+      tags: ['firewall']
