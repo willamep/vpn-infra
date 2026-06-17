@@ -13,7 +13,7 @@
 
 - name: Download udp2raw archive from GitHub
   ansible.builtin.get_url:
-    url: "https://github.com/wangyu-/udp2raw/releases/latest/download/udp2raw_binaries.tar.gz"
+    url: "https://github.com/wangyu-/udp2raw/releases/download/{{ udp2raw_version }}/udp2raw_binaries.tar.gz"
     dest: /tmp/udp2raw_build/udp2raw_binaries.tar.gz
     mode: '0644'
     timeout: 30
@@ -49,8 +49,3 @@
     enabled: yes
     state: started
     daemon_reload: yes
-
-- name: Remove temporary directory
-  ansible.builtin.file:
-    path: /tmp/udp2raw_build
-    state: absent
