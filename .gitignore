@@ -1,0 +1,40 @@
+# ---- Secrets / sensitive ----
+.secrets/
+*.pem
+*.key
+*.p12
+*_rsa
+*_ed25519
+list-ssh-keys
+note.md
+
+# ---- Terraform ----
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# ---- Ansible ----
+*.retry
+vault-password.txt
+.vault_pass
+ansible/inventory/hosts.yml
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

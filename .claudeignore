@@ -1,0 +1,10 @@
+.git/
+.gitkeep/
+.secrets/
+*.tfstate
+*.tfstate.backup
+.terraform/
+terraform.tfvars
+.terraform.lock.hcl
+list-ssh-keys
+note.md

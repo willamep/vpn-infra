@@ -1,0 +1,10 @@
+all:
+  children:
+    vpn_nodes:
+      hosts:
+%{ for vm in vms ~}
+        ${vm.name}:
+          ansible_host: ${vm.ip}
+          ansible_user: ansible
+
+%{ endfor ~}

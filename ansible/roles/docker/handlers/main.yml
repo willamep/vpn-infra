@@ -1,0 +1,5 @@
+- name: restart wg-easy
+  community.docker.docker_compose_v2:
+    project_src: /opt/wg-easy
+    state: present
+    recreate: always

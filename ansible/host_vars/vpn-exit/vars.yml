@@ -1,0 +1,2 @@
+wg_easy_password_hash: "{{ vault_wg_easy_password_hash }}"
+udp2raw_mode: "server"

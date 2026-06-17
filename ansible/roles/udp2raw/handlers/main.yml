@@ -1,0 +1,6 @@
+- name: Reload systemd and Restart udp2raw service
+  listen: restart udp2raw
+  ansible.builtin.systemd:
+    name: udp2raw
+    state: restarted
+    daemon_reload: yes

@@ -1,0 +1,56 @@
+- name: Prefer IPv4 over IPv6 in glibc resolver
+  ansible.builtin.lineinfile:
+    path: /etc/gai.conf
+    line: "precedence ::ffff:0:0/96  100"
+    create: yes
+    state: present
+
+- name: Create temporary directory for download
+  ansible.builtin.file:
+    path: /tmp/udp2raw_build
+    state: directory
+    mode: '0755'
+
+- name: Download udp2raw archive from GitHub
+  ansible.builtin.get_url:
+    url: "https://github.com/wangyu-/udp2raw/releases/latest/download/udp2raw_binaries.tar.gz"
+    dest: /tmp/udp2raw_build/udp2raw_binaries.tar.gz
+    mode: '0644'
+    timeout: 30
+  register: udp2raw_download
+  until: udp2raw_download is succeeded
+  retries: 5
+  delay: 5
+
+- name: Extract archive
+  ansible.builtin.unarchive:
+    src: /tmp/udp2raw_build/udp2raw_binaries.tar.gz
+    dest: /tmp/udp2raw_build/
+    remote_src: yes
+
+- name: Copy binary to system directory (x86_64)
+  ansible.builtin.copy:
+    src: /tmp/udp2raw_build/udp2raw_amd64
+    dest: /usr/local/bin/udp2raw
+    mode: '0755'
+    remote_src: yes
+  notify: restart udp2raw
+
+- name: Create systemd service from template
+  ansible.builtin.template:
+    src: udp2raw-{{ udp2raw_mode }}.service.j2
+    dest: /etc/systemd/system/udp2raw.service
+    mode: '0644'
+  notify: restart udp2raw
+
+- name: Start and enable udp2raw
+  ansible.builtin.systemd:
+    name: udp2raw
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Remove temporary directory
+  ansible.builtin.file:
+    path: /tmp/udp2raw_build
+    state: absent

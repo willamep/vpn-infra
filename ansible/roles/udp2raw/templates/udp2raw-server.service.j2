@@ -1,0 +1,18 @@
+[Unit]
+Description=udp2raw tunnel client
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/udp2raw \
+  -s \
+  -l {{ vpn_exit_ip }}:{{ wireguard_port }} \
+  -r 127.0.0.1:{{ wireguard_port }} \
+  -k "{{ udp2raw_password }}" \
+  --raw-mode faketcp
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+- hosts: vpn-exit
+  become: true
+  roles:
+    - docker
+
+- hosts: vpn_nodes
+  become: true
+  roles:
+    - udp2raw
