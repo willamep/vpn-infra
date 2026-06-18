@@ -1,52 +1,102 @@
 # vpn-infra
 
-An experiment in bypassing DPI-based blocking: a WireGuard VPN whose UDP traffic is wrapped into "faceless" TCP via **udp2raw (faketcp)**, so that to deep packet inspection systems the connection looks like an ordinary TCP stream.
+An infrastructure project for automated deployment of a WireGuard-over-fakeTCP infrastructure using Terraform and Ansible. An experiment exploring DPI bypass methods by encapsulating WireGuard traffic in fakeTCP.
 
-The entire infrastructure is described as code: **Terraform** provisions the virtual machines on **Proxmox VE**, and **Ansible** configures the VPN stack on them.
-
-> ⚠️ **Disclaimer.** This project was built for research and educational purposes — to study networking and transport obfuscation techniques. Use it only for lawful purposes and on infrastructure you own or are authorized to manage.
+The project was debugged on a local Proxmox stand, so it ships with Terraform for that provider. If you wish, you can rewrite it for your own provider or use only the Ansible playbook.
 
 > 🇷🇺 Русская версия — [README_RUS.md](README_RUS.md).
 
----
-
 ## Idea
 
-DPI systems can detect the WireGuard handshake by the signature of its UDP packets and block the connection. One way around this is to wrap WireGuard's UDP traffic into TCP using [udp2raw](https://github.com/wangyu-/udp2raw) in `faketcp` mode: from the outside it is indistinguishable from a regular TCP connection.
+Modern DPI systems are good at spotting the signatures of various bypass methods and blocking them; this method will sooner or later be blocked just the same. Whatever traffic obfuscation we apply, it will differ from the original signature — which is exactly why there are precedents of VLESS+REALITY being blocked.
 
-The goal of the experiment is to build a working stand for such a bypass, fully automate it with IaC, and validate the approach in practice.
+**Typical Web traffic** has a structure like this:
 
-### What the experiment showed
+```
+IP
+└── TCP
+    └── TLS
+        └── HTTP
+```
 
-This version **intentionally does not use packet-size randomization**. As a result, packets inside the tunnel have a constant size, and an advanced DPI could in theory react to this statistical anomaly and block the stream. This is a deliberate trade-off: the goal was to validate the obfuscation transport itself, not to build a solution resistant to statistical analysis. A size randomizer is the logical next step (see [Roadmap](#roadmap)).
+First comes theTCP handshake:
 
----
+```
+SYN
+SYN-ACK
+ACK
+```
+
+Then the TLS handshake begins:
+
+```
+ClientHello
+ServerHello...
+```
+
+And this TLS part is very recognizable: from it DPI can tell that the traffic is either legitimate web traffic or a disguised VPN — i.e. it keeps analyzing the signature, suspecting obfuscation.
+
+**My idea** is to drop TLS, making the traffic less recognizable to DPI. Unlike solutions that masquerade as HTTPS, faketcp traffic does not imitate web protocols and looks like an arbitrary TCP exchange between two nodes. At the time of development, this kind of traffic was not subject to active filtering.
+
+However, you can't simply wrap traffic into fake TCP. User traffic is carried by WireGuard, which runs over UDP. That WireGuard UDP traffic is then encapsulated into faketcp using the [udp2raw](https://github.com/wangyu-/udp2raw) tool.
+
+```
+IP
+└── TCP (fake)
+    └── encrypted WireGuard UDP
+```
+
+### Limitations
+
+Because WireGuard adds its own data and udp2raw adds faketcp on top, the packet size grows, so to let the traffic pass through every hop you have to lower the MTU to ~1300 — which increases the transmission overhead and reduces the channel throughput.
+
+> In tests on a 1 Gbit/s link, the best result was 135 Mbit/s download and 50 Mbit/s upload.
+
+The bypass works only until a DPI system takes an interest in analyzing this kind of traffic, because the method has 2 key problems:
+
+1. Identical packet size
+
+   WG normalizes all packets to the same configured size, and udp2raw also adds a roughly constant size on top. In server-to-server communication it is unlikely that all packets would be the same size. You can add packet-size randomization, but that leads to an even greater MTU reduction.
+2. The faketcp signature
+
+   It differs from the behavior of ordinary TCP, so it can potentially be used by DPI as a signature marker.
 
 ## Architecture
 
 Two nodes:
 
-| Node        | Role                                                                 |
-|-------------|---------------------------------------------------------------------|
-| `vpn-entry` | Entry point. `udp2raw` in **client** mode — wraps UDP into faketcp and sends it to the exit. |
+| Node        | Role                                                                                                                                       |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `vpn-entry` | Entry point. `udp2raw` in **client** mode — wraps UDP into faketcp and sends it to the exit.                                              |
 | `vpn-exit`  | Exit point. `udp2raw` in **server** mode + a WireGuard server ([wg-easy](https://github.com/wg-easy/wg-easy)) in Docker. Egress to the internet. |
 
 ```
-                faketcp tunnel (looks like TCP)
-  ┌──────────┐   udp2raw client  →  udp2raw server   ┌──────────┐
-  │ vpn-entry│ ═══════════════════════════════════►  │ vpn-exit │ ──► Internet
-  └──────────┘                                        └──────────┘
-       ▲                                              wg-easy (WireGuard
-       │ WireGuard UDP                                 server in Docker)
-   WG client
+               faketcp tunnel (looks like TCP)
+┌──────────┐    udp2raw client → udp2raw server   ┌──────────┐
+│ vpn-entry│ ═══════════════════════════════════► │ vpn-exit │ ──► Internet
+└──────────┘                                      └──────────┘
+   ▲                                            wg-easy (WireGuard
+   │  WireGuard UDP                              server in Docker)
+WG client
 ```
 
-- The WireGuard client connects to `vpn-entry`.
-- On the `entry → exit` leg, WireGuard's UDP traffic is encapsulated into faketcp (`udp2raw`).
-- On `vpn-exit` the traffic is unwrapped and reaches the `wg-easy` WireGuard server, which routes it out to the internet.
-- Because of the double encapsulation, the WireGuard MTU is lowered (`1330`, see `group_vars`).
+1. The WireGuard client connects to `vpn-entry`.
+2. On the `entry → exit` leg, WireGuard's UDP traffic is encapsulated into faketcp (`udp2raw`).
+3. On `vpn-exit` the traffic is unwrapped and reaches the `wg-easy` WireGuard server, which routes it out to the internet.
 
----
+> Because of the double encapsulation, the WireGuard MTU is lowered (see the value in `group_vars`).
+
+## Firewall
+
+Both nodes run an **nftables** firewall with a default `drop` policy (the `firewall` role, loaded by a dedicated `vpn-firewall.service` unit) to minimize the attack surface and stay closed to DPI scanners.
+
+| Node        | Open to the world                              | Open to the peer node only                                |
+| ----------- | ---------------------------------------------- | ---------------------------------------------------------- |
+| both        | TCP `22` (SSH)                                 | —                                                          |
+| `vpn-entry` | UDP WireGuard port (clients connect here)      | everything else — only from `vpn-exit`                     |
+| `vpn-exit`  | — (SSH only)                                   | everything else, including the faketcp port — only from `vpn-entry` |
+
+It uses its **own** table `inet vpn_firewall`, and `flush ruleset` is never executed — so Docker's tables (wg-easy port publishing, `FORWARD`, `DOCKER-USER`) stay untouched; for the same reason the stock `nftables.service` is disabled. ICMP is left open for Path MTU Discovery (the WireGuard-over-faketcp MTU is tuned by hand), and `ct state invalid drop` also suppresses the kernel `RST` for faketcp packets, replacing udp2raw's own `-a` rule.
 
 ## Tech stack
 
@@ -54,9 +104,6 @@ Two nodes:
 - **Ansible** — node configuration: roles, systemd templates, secrets in Ansible Vault.
 - **udp2raw** — transport obfuscation (faketcp).
 - **WireGuard** via **wg-easy** in **Docker** — VPN server with a web UI.
-- **Proxmox VE** — virtualization platform.
-
----
 
 ## Repository layout
 
@@ -77,23 +124,20 @@ vpn-infra/
     ├── host_vars/             # Per-node parameters (client/server mode)
     └── roles/
         ├── docker/            # Docker install + wg-easy deployment
-        └── udp2raw/           # udp2raw install + systemd unit
+        ├── udp2raw/           # udp2raw install + systemd unit
+        └── firewall/          # nftables firewall (own table + loader unit)
 ```
 
-After `apply`, Terraform renders `ansible/inventory/hosts.yml` from `inventory.tmpl` itself, so Ansible sees the created VMs right away.
+After `apply`, Terraform renders `ansible/inventory/hosts.yml` from `inventory.tmpl` itself, so Ansible immediately gets the data of the created VMs.
 
----
+## Deployment
 
-## Prerequisites
+### 0. Prerequisites
 
 - A **Proxmox VE** node/cluster with an API token.
 - A ready **cloud-init template** VM (Ubuntu/Debian) with the QEMU Guest Agent.
 - **Terraform** (≥ 1.x) and **Ansible** installed locally.
 - An SSH key for the `ansible` user.
-
----
-
-## Deployment
 
 ### 1. Terraform — provision the VMs
 
@@ -127,14 +171,14 @@ ansible-playbook vpn.yml                  # real run
 ```
 
 The playbook:
+
 1. installs Docker and brings up `wg-easy` on `vpn-exit`;
-2. installs `udp2raw` on both nodes (client on entry, server on exit) and registers the systemd service.
+2. installs `udp2raw` on both nodes (client on entry, server on exit) and registers the systemd service;
+3. applies the nftables firewall on both nodes (see [Firewall](#firewall)).
 
 ### 3. Connecting
 
-The wg-easy web UI is available on `vpn-exit:51821` (by default it listens locally — forward it over an SSH tunnel). There you create a WireGuard config for the client, which connects to `vpn-entry`.
-
----
+The wg-easy web UI is available on `localhost:51820` because of the firewall rules, or on `vpn-exit-ip:51821` if the firewall role was applied. There you create a WireGuard config for the client, which connects to `vpn-entry`.
 
 ## Secrets
 
@@ -143,16 +187,6 @@ Sensitive data is **not stored in the repository** (see `.gitignore`):
 - `terraform.tfvars`, `*.tfstate`, `list-ssh-keys` — Terraform;
 - `vault-password.txt`, encrypted `vault.yml` — Ansible Vault (udp2raw password, wg-easy password hash);
 - the generated `ansible/inventory/hosts.yml`.
-
----
-
-## Roadmap
-
-- [ ] Add **packet-size randomization** for resistance to statistical DPI.
-- [ ] CI checks (`terraform fmt/validate`, `ansible-lint`).
-- [ ] Automatic rotation of udp2raw / WireGuard keys.
-
----
 
 ## Technical highlights
 
