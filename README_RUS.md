@@ -107,6 +107,7 @@ WG-клиент
 
 ```
 vpn-infra/
+├── generate_inventory.py         # Генератор inventory для VM, созданных без Terraform
 ├── terraform/                 # Провижининг VM в Proxmox
 │   ├── providers.tf           # Провайдер bpg/proxmox
 │   ├── main.tf                # VM vpn-entry / vpn-exit + генерация Ansible inventory
@@ -117,7 +118,7 @@ vpn-infra/
 └── ansible/                   # Конфигурация узлов
     ├── ansible.cfg
     ├── vpn.yml                # Главный playbook
-    ├── inventory/hosts.yml    # Генерируется Terraform'ом
+    ├── inventory/hosts.yml    # Генерируется Terraform или generate_inventory.py
     ├── group_vars/vpn_nodes/  # Общие переменные + vault
     ├── host_vars/             # Параметры конкретных узлов (client/server режим)
     └── roles/
@@ -128,16 +129,43 @@ vpn-infra/
 
 Terraform после `apply` сам рендерит `ansible/inventory/hosts.yml` из `inventory.tmpl`, поэтому Ansible сразу получает данные созданных VM.
 
+Если узлы создавались без Terraform, сгенерируйте такой же inventory из корня проекта:
+
+```bash
+./generate_inventory.py
+```
+
+Скрипт интерактивно запросит адрес и SSH-пользователя для `vpn-entry` и `vpn-exit`. Его также можно запустить без интерактивного ввода:
+
+```bash
+./generate_inventory.py \
+  --entry-host 192.0.2.10 --entry-user ansible \
+  --exit-host 198.51.100.20 --exit-user root \
+  --force
+```
+
+Все параметры доступны через `./generate_inventory.py --help`. Файл будет записан в `ansible/inventory/hosts.yml`.
+
 ## Развёртывание
 
 ### 0. Предварительные требования
 
+**Общие требования:**
+
+- Локально установленный **Ansible**.
+- SSH-доступ к обеим нодам по ключу или паролю.
+- SSH-доступ под `root` либо под пользователем с правами `sudo`. Если `sudo` требует пароль, Ansible может запросить его при запуске или прочитать из переменной, зашифрованной с помощью Ansible Vault.
+
+**Если используется Terraform:**
+
+- Локально установленный **Terraform** (≥ 1.x).
 - Нода/кластер **Proxmox VE** с API-токеном.
 - Готовый **cloud-init шаблон** VM (Ubuntu/Debian) с QEMU Guest Agent.
-- Локально установленные **Terraform** (≥ 1.x) и **Ansible**.
-- SSH-ключ для пользователя `ansible`.
+- Публичный SSH-ключ для пользователя `ansible`.
 
 ### 1. Terraform — поднять VM
+
+> Пропустите этот шаг, если использовался `generate_inventory.py`.
 
 ```bash
 cd terraform
@@ -150,6 +178,8 @@ terraform init       # инициализация провайдеров (оди
 terraform validate   # проверка синтаксиса
 terraform plan       # предпросмотр
 terraform apply      # создание VM + генерация Ansible inventory
+
+cd ..                # вернуться в корень проекта
 ```
 
 После `apply` в `outputs` будут IP-адреса узлов, а inventory для Ansible сгенерируется автоматически.
@@ -157,9 +187,11 @@ terraform apply      # создание VM + генерация Ansible inventor
 ### 2. Ansible — настроить VPN
 
 ```bash
-cd ../ansible
+# Из корня проекта:
+cd ansible
 
 # Подготовить секреты:
+#   - создать vault-файлы и добавить в них секретные переменные
 #   - vault-password.txt (пароль от Ansible Vault)
 #   - зашифровать vault-файлы: ansible-vault encrypt group_vars/vpn_nodes/vault.yml ...
 
@@ -168,11 +200,23 @@ ansible-playbook vpn.yml --check          # сухой прогон без из�
 ansible-playbook vpn.yml                  # реальный запуск
 ```
 
+Команды выше предполагают аутентификацию по SSH-ключу и вход непосредственно под `root` либо использование `sudo` без пароля. Для аутентификации по SSH-паролю добавьте `--ask-pass` (`-k`). Если `sudo` тоже требует пароль, добавьте `--ask-become-pass` (`-K`):
+
+```bash
+ansible-playbook vpn.yml --ask-pass --ask-become-pass
+# Короткая форма:
+ansible-playbook vpn.yml -kK
+```
+
+При интерактивном запуске один SSH-пароль и один пароль повышения привилегий используются для всех хостов. Если пароли на нодах различаются или нужна автоматическая аутентификация, задайте `ansible_password` и, при необходимости, `ansible_become_password` в зашифрованных Vault-файлах для соответствующих хостов. Не храните эти пароли открытым текстом в inventory или `vars.yml`.
+
 Playbook:
 
 1. ставит Docker и поднимает `wg-easy` на `vpn-exit`;
 2. ставит `udp2raw` на оба узла (client на entry, server на exit) и регистрирует systemd-сервис;
 3. применяет nftables-фаервол на обоих узлах (см. [Фаервол](#фаервол)).
+
+> Будьте внимательны с правилами фаервола, они могут сломать другие сервисы на ваших нодах.
 
 ### 3. Подключение
 
